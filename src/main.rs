@@ -95,10 +95,23 @@ async fn shutdown_signal(mut rx: watch::Receiver<bool>) {
     #[cfg(not(unix))]
     let sigterm = std::future::pending::<()>();
 
+    let stdin_closed = async {
+        use tokio::io::AsyncReadExt;
+        let mut stdin = tokio::io::stdin();
+        let mut buf = [0u8; 1];
+        loop {
+            match stdin.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                _ => {}
+            }
+        }
+    };
+
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
         _ = rx.changed() => {},
         _ = sigterm => {},
+        _ = stdin_closed => {},
     }
 }
 
