@@ -45,11 +45,41 @@ async fn main() {
         client_builder = client_builder.timeout(Duration::from_secs(cli.timeout));
     }
 
-    let client = client_builder.build()
-        .unwrap_or_else(|e| {
-            eprintln!("[ERROR] Failed to build HTTP client: {e}");
-            std::process::exit(1);
-        });
+    let client = client_builder.build().unwrap_or_else(|e| {
+        eprintln!("[ERROR] Failed to build HTTP client: {e}");
+        std::process::exit(1);
+    });
+
+    let addr: SocketAddr = cli.listen.parse().unwrap_or_else(|_| {
+        eprintln!("[ERROR] Invalid listen address: {}", cli.listen);
+        std::process::exit(1);
+    });
+
+    // A single task owns tokio stdin and broadcasts EOF via a watch channel.
+    // This avoids multiple concurrent readers on the same stdin handle.
+    let (stdin_tx, stdin_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut stdin = tokio::io::stdin();
+        let mut buf = [0u8; 1];
+        loop {
+            match stdin.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                _ => {}
+            }
+        }
+        let _ = stdin_tx.send(true);
+    });
+
+    // Try to bind the port. If already in use, wait dormant (stdin still monitored)
+    // until the port is released or stdin closes.
+    let listener = match wait_for_port(addr, stdin_rx.clone()).await {
+        Some(l) => l,
+        None => return,
+    };
+
+    println!("Listening on {addr}");
+    println!("Target: {target}");
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
@@ -66,21 +96,8 @@ async fn main() {
         .fallback(proxy_handler)
         .with_state(state);
 
-    let addr: SocketAddr = cli.listen.parse().unwrap_or_else(|_| {
-        eprintln!("[ERROR] Invalid listen address: {}", cli.listen);
-        std::process::exit(1);
-    });
-
-    println!("Listening on {addr}");
-    println!("Target: {target}");
-
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
-        eprintln!("[ERROR] Failed to bind {addr}: {e}");
-        std::process::exit(1);
-    });
-
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown_rx))
+        .with_graceful_shutdown(shutdown_signal(shutdown_rx, stdin_rx))
         .await
         .unwrap_or_else(|e| {
             eprintln!("[ERROR] Server error: {e}");
@@ -88,7 +105,44 @@ async fn main() {
         });
 }
 
-async fn shutdown_signal(mut rx: watch::Receiver<bool>) {
+/// Try to bind `addr`. If the port is already in use, retry every second
+/// in dormant mode (stdin is still monitored). Returns `None` if stdin
+/// closed before the port became available.
+async fn wait_for_port(
+    addr: SocketAddr,
+    mut stdin_rx: watch::Receiver<bool>,
+) -> Option<tokio::net::TcpListener> {
+    let mut dormant = false;
+    loop {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                if dormant {
+                    eprintln!("[INFO] Port {addr} is now available. Starting HTTPD.");
+                }
+                return Some(listener);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                if !dormant {
+                    eprintln!("[INFO] Port {addr} is already in use. Waiting in dormant mode...");
+                    dormant = true;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    _ = stdin_rx.wait_for(|v| *v) => {
+                        eprintln!("[INFO] stdin closed while dormant. Exiting.");
+                        return None;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[ERROR] Failed to bind {addr}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+async fn shutdown_signal(mut rx: watch::Receiver<bool>, mut stdin_rx: watch::Receiver<bool>) {
     #[cfg(unix)]
     let sigterm = async {
         use tokio::signal::unix::{signal, SignalKind};
@@ -100,23 +154,11 @@ async fn shutdown_signal(mut rx: watch::Receiver<bool>) {
     #[cfg(not(unix))]
     let sigterm = std::future::pending::<()>();
 
-    let stdin_closed = async {
-        use tokio::io::AsyncReadExt;
-        let mut stdin = tokio::io::stdin();
-        let mut buf = [0u8; 1];
-        loop {
-            match stdin.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                _ => {}
-            }
-        }
-    };
-
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
         _ = rx.changed() => {},
         _ = sigterm => {},
-        _ = stdin_closed => {},
+        _ = stdin_rx.wait_for(|v| *v) => {},
     }
 }
 
