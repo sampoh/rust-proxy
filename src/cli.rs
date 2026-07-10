@@ -10,4 +10,8 @@ pub struct Cli {
     /// Local listen address
     #[arg(long, default_value = "127.0.0.1:18080")]
     pub listen: String,
+
+    /// Upstream request timeout in seconds (0 = no timeout)
+    #[arg(long, default_value_t = 130)]
+    pub timeout: u64,
 }

@@ -25,9 +25,7 @@ cargo build --release
 ## 実行
 
 ```bash
-http_proxy \
-  --target=https://example.com \
-  --listen=127.0.0.1:18080
+http_proxy --target https://example.com --listen 127.0.0.1:18080
 ```
 
 ### 引数
@@ -36,6 +34,22 @@ http_proxy \
 |---|---|---|---|
 | `--target` | ✓ | — | 転送先のベース URL（末尾スラッシュ不要） |
 | `--listen` | — | `127.0.0.1:18080` | ローカル待受アドレス |
+| `--timeout` | — | `130` | アップストリームへのリクエストタイムアウト（秒）。`0` を指定するとタイムアウトなし |
+
+### タイムアウトの設定
+
+デフォルトは 130 秒です。4D の `HTTP Request` コマンドのデフォルトタイムアウト（120 秒）より少し長く設定することで、4D 側が先にタイムアウトして既存のエラーハンドリングがそのまま動作します。
+
+```bash
+# デフォルト（130秒）
+http_proxy --target https://example.com
+
+# タイムアウトを任意の値に変更（例: 60秒）
+http_proxy --target https://example.com --timeout 60
+
+# タイムアウトなし
+http_proxy --target https://example.com --timeout 0
+```
 
 ### 動作例
 

@@ -30,7 +30,7 @@ async fn main() {
     // - Redirects are NOT followed; the original response is forwarded as-is.
     // - Auto-decompression is disabled so Content-Encoding is preserved.
     // - The connection pool is kept alive aggressively.
-    let client = reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .pool_max_idle_per_host(64)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(60))
@@ -39,8 +39,13 @@ async fn main() {
         .no_gzip()
         .no_brotli()
         .no_deflate()
-        .no_zstd()
-        .build()
+        .no_zstd();
+
+    if cli.timeout > 0 {
+        client_builder = client_builder.timeout(Duration::from_secs(cli.timeout));
+    }
+
+    let client = client_builder.build()
         .unwrap_or_else(|e| {
             eprintln!("[ERROR] Failed to build HTTP client: {e}");
             std::process::exit(1);
