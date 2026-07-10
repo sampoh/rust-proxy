@@ -132,7 +132,7 @@ var $WORKER : Text
 var $host : Text
 
 $WORKER:="RUST_PROXY"
-$host:="https://yourhost.com"
+$host:="https://example.com"
 
 // システム起動時に実行
 CALL WORKER($WORKER; "Proxy"; "start"; $host)
