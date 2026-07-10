@@ -12,6 +12,6 @@ pub struct Cli {
     pub listen: String,
 
     /// Upstream request timeout in seconds (0 = no timeout)
-    #[arg(long, default_value_t = 130)]
+    #[arg(long, default_value_t = 200)]
     pub timeout: u64,
 }
