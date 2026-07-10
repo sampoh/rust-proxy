@@ -158,6 +158,8 @@ CALL WORKER($WORKER; "Proxy"; "start"; $host)
 
 // システム終了時に実行
 CALL WORKER($WORKER; "Proxy"; "end")
+
+KILL WORKER($WORKER)
 ```
 
 起動後は `http://127.0.0.1:18080` 宛のリクエストが `$host` に転送されます。
