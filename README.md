@@ -108,7 +108,7 @@ Case of
                 $path:=$dir+"http_proxy-windows-x86_64.exe"
         End case 
         
-        $command:=$path+" --target "+$host
+        $command:="\""+$path+"\" --target "+$host
         
         sw:=4D.SystemWorker.new($command)
         
