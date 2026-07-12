@@ -146,10 +146,13 @@ async fn shutdown_signal(mut rx: watch::Receiver<bool>, mut stdin_rx: watch::Rec
     #[cfg(unix)]
     let sigterm = async {
         use tokio::signal::unix::{signal, SignalKind};
-        signal(SignalKind::terminate())
-            .expect("SIGTERM handler")
-            .recv()
-            .await;
+        match signal(SignalKind::terminate()) {
+            Ok(mut sig) => { sig.recv().await; }
+            Err(e) => {
+                eprintln!("[ERROR] Failed to register SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
     };
     #[cfg(not(unix))]
     let sigterm = std::future::pending::<()>();
