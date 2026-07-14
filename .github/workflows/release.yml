@@ -19,10 +19,18 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: http_proxy.exe
             asset_name: http_proxy-windows-x86_64.exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact: http_proxy.exe
+            asset_name: http_proxy-windows-arm64.exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: http_proxy
             asset_name: http_proxy-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: http_proxy
+            asset_name: http_proxy-linux-arm64
 
     steps:
       - uses: actions/checkout@v6
