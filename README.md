@@ -6,9 +6,11 @@
 
 - keep-alive・接続プール常時有効（全リクエストで `reqwest::Client` を共有）
 - HTTP/2 を ALPN 経由で自動利用
+- WebSocket (ws/wss) の双方向トンネリング対応
 - リダイレクト非追従（3xx レスポンスをそのまま返す）
 - 自動解凍なし（Content-Encoding をそのまま転送）
 - Hop-by-hop ヘッダの適切な除去
+- ポート使用中のドーマントモード（待機して空き次第自動起動）
 
 ## ビルド
 
@@ -68,6 +70,16 @@ GET https://example.com/api/test?q=1
 | `POST /__shutdown` | HTTP エンドポイント経由でシャットダウン |
 | SIGTERM | `kill <pid>` 等によるシグナル送信（Unix） |
 | SIGINT | Ctrl+C |
+| stdin EOF | 標準入力を閉じると終了（4D の `sw.closeInput()` 等） |
+
+## ドーマントモード
+
+起動時に指定ポートが既に使用中の場合、即時終了せず 1 秒ごとにポートが空くのを待ちます。ポートが解放された時点で自動的にリッスンを開始します。この待機中に stdin が閉じられた場合はそのまま終了します。
+
+```
+[INFO] Port 127.0.0.1:18080 is already in use. Waiting in dormant mode...
+[INFO] Port 127.0.0.1:18080 is now available. Starting HTTPD.
+```
 
 ## ログ
 
@@ -78,7 +90,13 @@ Listening on 127.0.0.1:18080
 Target: https://example.com
 ```
 
-エラー発生時のみ `[ERROR]` プレフィックス付きで詳細を標準エラーに出力します。
+以下のプレフィックスで標準エラーに詳細を出力します。
+
+| プレフィックス | 説明 |
+|---|---|
+| `[ERROR]` | 致命的なエラー（アップストリーム失敗、バインド失敗 等） |
+| `[INFO]` | 情報メッセージ（ドーマントモード開始・終了 等） |
+| `[WS]` | WebSocket プロキシ関連のエラー |
 
 ## 4D との連携
 
@@ -88,8 +106,9 @@ Target: https://example.com
 
 | OS | ファイル名 |
 |---|---|
-| macOS (Apple Silicon) | `http_proxy-macos-aarch64` |
+| macOS (Universal Binary) | `http_proxy-macos-universal` |
 | Windows | `http_proxy-windows-x86_64.exe` |
+| Linux | `http_proxy-linux-x86_64` |
 
 ### ワーカーメソッド "Proxy" の実装
 
@@ -117,7 +136,7 @@ Case of
         
         Case of 
             : (Is macOS)
-                $path:=$dir+"http_proxy-macos-universal"
+                $path:=$dir+"http_proxy-macos-universal"  // Universal Binary (Apple Silicon + Intel)
             : (Is Windows)
                 $path:=$dir+"http_proxy-windows-x86_64.exe"
         End case 
