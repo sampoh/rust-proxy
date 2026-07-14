@@ -113,7 +113,7 @@ End if
 Case of 
     : ($mode="start")
         
-        $dir:=Get 4D folder(Current resources folder)
+        $dir:=Convert path system to POSIX(Get 4D folder(Current resources folder))
         
         Case of 
             : (Is macOS)
