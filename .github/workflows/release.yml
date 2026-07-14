@@ -19,10 +19,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: http_proxy.exe
             asset_name: http_proxy-windows-x86_64.exe
-          - os: macos-14
-            target: aarch64-apple-darwin
-            artifact: http_proxy
-            asset_name: http_proxy-macos-aarch64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: http_proxy
@@ -57,3 +53,54 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.asset_name }}
+
+  build-macos-universal:
+    name: Build (macOS Universal Binary)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo (aarch64)
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: aarch64-apple-darwin-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (aarch64-apple-darwin)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Cache cargo (x86_64)
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: x86_64-apple-darwin-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (x86_64-apple-darwin)
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Create Universal Binary
+        run: |
+          lipo -create \
+            target/aarch64-apple-darwin/release/http_proxy \
+            target/x86_64-apple-darwin/release/http_proxy \
+            -output http_proxy-macos-universal
+
+      - name: Verify Universal Binary
+        run: file http_proxy-macos-universal
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: http_proxy-macos-universal
