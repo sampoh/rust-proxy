@@ -3,12 +3,23 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{
+        ws::{CloseFrame as AxumCloseFrame, Message as AxumMsg, WebSocket, WebSocketUpgrade},
+        FromRequestParts, Request, State,
+    },
     http::{HeaderMap, StatusCode},
     response::Response,
 };
-use futures_util::TryStreamExt;
+use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use tokio::sync::watch;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{
+        self,
+        protocol::{frame::coding::CloseCode, CloseFrame as TungCloseFrame, Message as TungMsg},
+    },
+    MaybeTlsStream, WebSocketStream,
+};
 
 pub struct AppState {
     pub client: reqwest::Client,
@@ -51,6 +62,14 @@ fn is_hop_by_hop(name: &str, extra: &HashSet<String>) -> bool {
     HOP_BY_HOP.contains(&lower.as_str()) || extra.contains(&lower)
 }
 
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false)
+}
+
 pub async fn shutdown_handler(State(state): State<Arc<AppState>>) -> StatusCode {
     let _ = state.shutdown_tx.send(true);
     StatusCode::OK
@@ -60,6 +79,10 @@ pub async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     req: Request,
 ) -> Result<Response, StatusCode> {
+    if is_websocket_upgrade(req.headers()) {
+        return ws_proxy(state, req).await;
+    }
+
     let method = req.method().clone();
     let uri = req.uri().clone();
     let req_headers = req.headers().clone();
@@ -122,4 +145,136 @@ pub async fn proxy_handler(
         eprintln!("[ERROR] Failed to build response: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })
+}
+
+// ── WebSocket proxy ───────────────────────────────────────────────────────────
+
+async fn ws_proxy(state: Arc<AppState>, req: Request) -> Result<Response, StatusCode> {
+    let uri = req.uri().clone();
+    let req_headers = req.headers().clone();
+
+    let (mut parts, _body) = req.into_parts();
+
+    let ws_upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &())
+        .await
+        .map_err(|_| {
+            eprintln!("[WS] WebSocket upgrade extraction failed");
+            StatusCode::BAD_REQUEST
+        })?;
+
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let upstream_url = build_ws_url(&state.target, path_and_query);
+    let target_host = state.target_host.clone();
+
+    Ok(ws_upgrade.on_upgrade(move |client_ws| async move {
+        match connect_upstream_ws(&upstream_url, &req_headers, &target_host).await {
+            Ok(upstream_ws) => tunnel_ws(client_ws, upstream_ws).await,
+            Err(e) => eprintln!("[WS] Upstream connect failed for {upstream_url}: {e}"),
+        }
+    }))
+}
+
+fn build_ws_url(target: &str, path_and_query: &str) -> String {
+    let base = if let Some(rest) = target.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = target.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        target.to_string()
+    };
+    format!("{base}{path_and_query}")
+}
+
+async fn connect_upstream_ws(
+    url: &str,
+    req_headers: &HeaderMap,
+    target_host: &str,
+) -> Result<
+    WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    let mut builder = tungstenite::http::Request::builder()
+        .uri(url)
+        .header("host", target_host);
+
+    let conn_headers = connection_listed_headers(req_headers);
+    for (name, value) in req_headers {
+        let lower = name.as_str().to_lowercase();
+        // Strip hop-by-hop headers and let tungstenite manage Sec-WebSocket-* itself
+        if lower == "host"
+            || is_hop_by_hop(&lower, &conn_headers)
+            || lower.starts_with("sec-websocket-")
+        {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            builder = builder.header(name.as_str(), v);
+        }
+    }
+
+    let request = builder.body(())?;
+    let (ws_stream, _response) = connect_async(request).await?;
+    Ok(ws_stream)
+}
+
+async fn tunnel_ws(
+    mut client: WebSocket,
+    mut upstream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+) {
+    loop {
+        tokio::select! {
+            msg = client.recv() => {
+                match msg {
+                    Some(Ok(m)) => {
+                        if let Some(tm) = axum_to_tung(m) {
+                            if upstream.send(tm).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            msg = upstream.next() => {
+                match msg {
+                    Some(Ok(m)) => {
+                        if let Some(am) = tung_to_axum(m) {
+                            if client.send(am).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
+    let _ = upstream.close(None).await;
+}
+
+// Ping/Pong は転送しない。tungstenite と axum がそれぞれ自動返信するため、
+// 転送すると各接続で Pong が 2 回届くバグになる。
+fn axum_to_tung(msg: AxumMsg) -> Option<TungMsg> {
+    match msg {
+        AxumMsg::Text(t) => Some(TungMsg::Text(t.to_string())),
+        AxumMsg::Binary(b) => Some(TungMsg::Binary(b.to_vec())),
+        AxumMsg::Ping(_) | AxumMsg::Pong(_) => None,
+        AxumMsg::Close(c) => Some(TungMsg::Close(c.map(|f| TungCloseFrame {
+            code: CloseCode::from(f.code),
+            reason: f.reason,
+        }))),
+    }
+}
+
+fn tung_to_axum(msg: TungMsg) -> Option<AxumMsg> {
+    match msg {
+        TungMsg::Text(t) => Some(AxumMsg::Text(t.to_string())),
+        TungMsg::Binary(b) => Some(AxumMsg::Binary(b.into())),
+        TungMsg::Ping(_) | TungMsg::Pong(_) => None,
+        TungMsg::Close(c) => Some(AxumMsg::Close(c.map(|f| AxumCloseFrame {
+            code: f.code.into(),
+            reason: f.reason,
+        }))),
+        TungMsg::Frame(_) => None,
+    }
 }
