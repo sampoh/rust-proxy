@@ -117,7 +117,7 @@ Case of
         
         Case of 
             : (Is macOS)
-                $path:=$dir+"http_proxy-macos-aarch64"
+                $path:=$dir+"http_proxy-macos-universal"
             : (Is Windows)
                 $path:=$dir+"http_proxy-windows-x86_64.exe"
         End case 
