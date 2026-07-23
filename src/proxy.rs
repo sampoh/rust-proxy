@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     body::Body,
@@ -221,33 +222,71 @@ async fn tunnel_ws(
     mut client: WebSocket,
     mut upstream: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
 ) {
-    loop {
+    // 両脚に定期 Ping を送る。axum の自動 Pong はクライアント脚しか維持できず、
+    // tungstenite の自動 Pong は上流脚しか維持できないため、そのままだと
+    // 反対側の中継(nginx など)がアイドルで接続を切って WebSocket 1006 になる。
+    // nginx の proxy_read_timeout デフォルト 60s を下回るように 25s に設定。
+    let mut keepalive = tokio::time::interval(Duration::from_secs(25));
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    keepalive.tick().await; // 即時発火する 1 発目を消費
+
+    // Some(reason) なら「上流側の切断を我々が検知した」ケースなので
+    // クライアントに Close フレームを送って 1006 ではなく 1011 で終わらせる。
+    let upstream_failure: Option<&'static str> = loop {
         tokio::select! {
             msg = client.recv() => {
                 match msg {
                     Some(Ok(m)) => {
+                        let is_close = matches!(&m, AxumMsg::Close(_));
                         if let Some(tm) = axum_to_tung(m) {
                             if upstream.send(tm).await.is_err() {
-                                break;
+                                break Some("upstream send failed");
                             }
                         }
+                        // クライアントからの Close を転送済み。二重 Close を避けるため即終了。
+                        if is_close {
+                            break None;
+                        }
                     }
-                    _ => break,
+                    // クライアント発の切断。Close をこちらから送り返す必要はない。
+                    _ => break None,
                 }
             }
             msg = upstream.next() => {
                 match msg {
                     Some(Ok(m)) => {
+                        let is_close = matches!(&m, TungMsg::Close(_));
                         if let Some(am) = tung_to_axum(m) {
                             if client.send(am).await.is_err() {
-                                break;
+                                break None;
                             }
                         }
+                        // 上流からの Close を転送済み。1011 の追加送信は不要。
+                        if is_close {
+                            break None;
+                        }
                     }
-                    _ => break,
+                    _ => break Some("upstream closed"),
+                }
+            }
+            _ = keepalive.tick() => {
+                if upstream.send(TungMsg::Ping(Vec::new())).await.is_err() {
+                    break Some("upstream ping failed");
+                }
+                if client.send(AxumMsg::Ping(Vec::new())).await.is_err() {
+                    break None;
                 }
             }
         }
+    };
+
+    if let Some(reason) = upstream_failure {
+        let _ = client
+            .send(AxumMsg::Close(Some(AxumCloseFrame {
+                code: 1011,
+                reason: reason.into(),
+            })))
+            .await;
     }
     let _ = upstream.close(None).await;
 }
