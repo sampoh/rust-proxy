@@ -266,7 +266,14 @@ async fn tunnel_ws(
                             break None;
                         }
                     }
-                    _ => break Some("upstream closed"),
+                    Some(Err(e)) => {
+                        eprintln!("[WS] Upstream error: {e}");
+                        break Some("upstream error");
+                    }
+                    None => {
+                        eprintln!("[WS] Upstream closed without Close frame");
+                        break Some("upstream closed");
+                    }
                 }
             }
             _ = keepalive.tick() => {
@@ -281,6 +288,7 @@ async fn tunnel_ws(
     };
 
     if let Some(reason) = upstream_failure {
+        eprintln!("[WS] Sending Close(1011) to client: {reason}");
         let _ = client
             .send(AxumMsg::Close(Some(AxumCloseFrame {
                 code: 1011,
@@ -291,13 +299,18 @@ async fn tunnel_ws(
     let _ = upstream.close(None).await;
 }
 
-// Ping/Pong は転送しない。tungstenite と axum がそれぞれ自動返信するため、
-// 転送すると各接続で Pong が 2 回届くバグになる。
+// Ping は両方向で転送する。
+// upstream→client: tungstenite が upstream に auto-Pong を送る。client が受信して Pong を返すが
+//   その Pong はプロキシで破棄し upstream には届かない。よって upstream への Pong は 1 回だけ。
+// client→upstream: axum が client に auto-Pong を送る。upstream が受信して Pong を返すが
+//   その Pong はプロキシで破棄し client には届かない。よって client への Pong は 1 回だけ。
+// Pong は転送しない（auto-Pong が既に相手に送られているため重複になる）。
 fn axum_to_tung(msg: AxumMsg) -> Option<TungMsg> {
     match msg {
         AxumMsg::Text(t) => Some(TungMsg::Text(t.to_string())),
         AxumMsg::Binary(b) => Some(TungMsg::Binary(b.to_vec())),
-        AxumMsg::Ping(_) | AxumMsg::Pong(_) => None,
+        AxumMsg::Ping(data) => Some(TungMsg::Ping(data)),
+        AxumMsg::Pong(_) => None,
         AxumMsg::Close(c) => Some(TungMsg::Close(c.map(|f| TungCloseFrame {
             code: CloseCode::from(f.code),
             reason: f.reason,
@@ -309,7 +322,8 @@ fn tung_to_axum(msg: TungMsg) -> Option<AxumMsg> {
     match msg {
         TungMsg::Text(t) => Some(AxumMsg::Text(t.to_string())),
         TungMsg::Binary(b) => Some(AxumMsg::Binary(b.into())),
-        TungMsg::Ping(_) | TungMsg::Pong(_) => None,
+        TungMsg::Ping(data) => Some(AxumMsg::Ping(data)),
+        TungMsg::Pong(_) => None,
         TungMsg::Close(c) => Some(AxumMsg::Close(c.map(|f| AxumCloseFrame {
             code: f.code.into(),
             reason: f.reason,
