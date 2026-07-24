@@ -135,6 +135,7 @@ Target: https://example.com
 ```4d
 var $1; $mode : Text
 var $2; $host : Text
+var $3; $subhost : Text
 
 var $dir; $path; $command : Text
 var sw : 4D.SystemWorker
@@ -145,6 +146,10 @@ End if
 
 If (Count parameters>=2)
     $host:=$2
+End if 
+
+If (Count parameters>=3)
+    $subhost:=$3
 End if 
 
 Case of 
@@ -160,6 +165,10 @@ Case of
         End case 
         
         $command:="\""+$path+"\" --target "+$host
+        
+        If ($subhost#"")
+            $command:=$command+" --target2 "+$subhost
+        End if 
         
         sw:=4D.SystemWorker.new($command)
         
