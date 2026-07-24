@@ -17,6 +17,7 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{
         self,
+        handshake::client::generate_key,
         protocol::{frame::coding::CloseCode, CloseFrame as TungCloseFrame, Message as TungMsg},
     },
     MaybeTlsStream, WebSocketStream,
@@ -194,17 +195,29 @@ async fn connect_upstream_ws(
     WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     Box<dyn std::error::Error + Send + Sync>,
 > {
+    // tungstenite 0.24 の connect_async(Request<()>) は Sec-WebSocket-* / Upgrade /
+    // Connection / Host を自動生成しないため、こちら側で必ず付与する必要がある。
+    // 欠けていると generate_request が "Missing, duplicated or incorrect header
+    // sec-websocket-key" を返して接続前にエラーになる。
     let mut builder = tungstenite::http::Request::builder()
         .uri(url)
-        .header("host", target_host);
+        .header("host", target_host)
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", generate_key());
 
     let conn_headers = connection_listed_headers(req_headers);
     for (name, value) in req_headers {
         let lower = name.as_str().to_lowercase();
-        // Strip hop-by-hop headers and let tungstenite manage Sec-WebSocket-* itself
+        // 自前で組み立てたヘッダは重複させない。Sec-WebSocket-Key/Version はクライアント値を
+        // そのまま転送すると鍵検証が壊れるので破棄。Sec-WebSocket-Protocol/Extensions は
+        // サブプロトコル・拡張のネゴシエーションに必要なのでクライアント値を転送する。
         if lower == "host"
             || is_hop_by_hop(&lower, &conn_headers)
-            || lower.starts_with("sec-websocket-")
+            || lower == "sec-websocket-key"
+            || lower == "sec-websocket-version"
+            || lower == "sec-websocket-accept"
         {
             continue;
         }

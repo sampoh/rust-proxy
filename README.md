@@ -190,12 +190,14 @@ End case
 ```4d
 var $WORKER : Text
 var $host : Text
+var $subhost : Text
 
 $WORKER:="RUST_PROXY"
 $host:="https://example.com"
+$subhost:="https://example2.com"
 
 // システム起動時に実行
-CALL WORKER($WORKER; "Proxy"; "start"; $host)
+CALL WORKER($WORKER; "Proxy"; "start"; $host; $subhost)
 
 //　↓↓↓　ここにメイン処理を実装　↓↓↓
 
