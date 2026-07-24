@@ -36,7 +36,25 @@ http_proxy --target https://example.com --listen 127.0.0.1:18080
 |---|---|---|---|
 | `--target` | ✓ | — | 転送先のベース URL（末尾スラッシュ不要） |
 | `--listen` | — | `127.0.0.1:18080` | ローカル待受アドレス |
+| `--target2` | — | — | 2 つ目の転送先ベース URL。指定した場合、2 つのポートで同時に待機します |
+| `--listen2` | — | `--listen` のポート番号 + 1 | 2 つ目のローカル待受アドレス。`--target2` を指定していない場合は無視されます |
 | `--timeout` | — | `200` | アップストリームへのリクエストタイムアウト（秒）。`0` を指定するとタイムアウトなし |
+| `--timeout2` | — | `--timeout` の値 | `--target2` 向けのリクエストタイムアウト（秒）。省略時は `--timeout` の値を使用。`0` を指定するとタイムアウトなし |
+
+### 複数ターゲット
+
+`--target2` を指定すると、2 つの独立したプロキシが同時に起動します。`--listen2` を省略した場合は `--listen` のポート番号 + 1 が自動的に使用されます。`--target2` を指定していない場合、`--listen2` は無視されます。
+
+```bash
+# 18080 → example.com、18081 → exampletwo.com（listen2 は listen+1）
+http_proxy --target https://example.com --target2 https://exampletwo.com
+
+# 1234 → example.com、1235 → exampletwo.com
+http_proxy --target https://example.com --listen 127.0.0.1:1234 --target2 https://exampletwo.com
+
+# 1234 → example.com、23450 → exampletwo.com
+http_proxy --target https://example.com --listen 127.0.0.1:1234 --target2 https://exampletwo.com --listen2 127.0.0.1:23450
+```
 
 ### タイムアウトの設定
 
